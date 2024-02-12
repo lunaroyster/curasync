@@ -1,6 +1,6 @@
 {
   "name": "curasync",
-  "version": "0.0.1-dev",
+  "version": "0.0.2",
   "description": "Sync your cura configuration folder with a git repository",
   "main": "index.js",
   "scripts": {

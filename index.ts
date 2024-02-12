@@ -2,7 +2,7 @@
 
 import fs from "fs";
 import os from "os";
-import { execSync } from "child_process";
+import { execFileSync } from "child_process";
 import { parseArgs } from "util";
 import { $, sleep } from "bun";
 import path from "path";
@@ -70,7 +70,7 @@ const curaDirectory = getDefaultCuraDirectory();
 
 function checkGitInstallation() {
   try {
-    execSync("git --version", { stdio: "ignore" });
+    execFileSync("git", ["--version"], { stdio: "ignore" });
     return true;
   } catch (e) {
     return false;
@@ -96,7 +96,7 @@ if (!checkCuraVersionDirectory()) {
 
 function checkGitInitialization() {
   try {
-    execSync("git status", { cwd: curaDirectory, stdio: "ignore" });
+    execFileSync("git", ["status"], { cwd: curaDirectory, stdio: "ignore" });
     return true;
   } catch (e) {
     return false;
@@ -117,8 +117,8 @@ function printInfo() {
 function printHelp() {
   console.log(`curasync
 \thelp\tprint help screen
-\tinit\tinitialize curasync in your cura folder
-\tclone\tpull a curasync remote
+\tinit <repo_url>\tinitialize curasync in your cura folder and push to <repo_url>
+\tclone <repo_url>\tclone a curasync remote into your cura directory
 \tpull\tgrab changes from remote
 \tpush\tpush local changes to remote
 \tcwd\tprint the cura directory`);
@@ -178,44 +178,31 @@ async function ask(q: string, defaultAnswer?: string): Promise<string> {
   throw new Error("unreachable");
 }
 
-async function initializeRepo() {
-  const res = await confirm(
-    "This command will turn your cura configuration folder into a git repo and push it into a blank repository. Use this if you want to share your config with others. Proceed?",
-    "n"
-  );
-
-  if (res !== "y") {
-    process.exit(1);
-  }
-
+async function initializeRepo(url: string) {
   const killRes = await confirmAndKillCura();
 
   if (!killRes) {
     throw new Error("Exiting: cura is still running");
   }
 
-  console.log("Enter a git repo origin");
-  let url;
-  for await (const line of console) {
-    if (!isValidUrl(line)) {
-      console.error("Invalid URL. Please enter a valid URL.");
-      continue;
-    }
-    url = line;
+  if (isGitInitialized) {
+    execFileSync("rm", ["-rf", ".git"], { cwd: curaDirectory });
   }
 
   // create repo
-  execSync("git init", { cwd: curaDirectory });
+  execFileSync("git", ["init"], { cwd: curaDirectory });
 
   // add origin
-  execSync(`git remote add origin ${url}`, { cwd: curaDirectory });
+  execFileSync("git", ["remote", "add", "origin", url], { cwd: curaDirectory });
 
   // create init commit
-  execSync(`git add .`, { cwd: curaDirectory });
-  execSync(`git commit -m "[curasync] init"`, { cwd: curaDirectory });
+  execFileSync("git", ["add", "."], { cwd: curaDirectory });
+  execFileSync("git", ["commit", "-m", "[curasync] init"], {
+    cwd: curaDirectory,
+  });
 
   // push
-  execSync(`git push -u origin main"`, { cwd: curaDirectory });
+  execFileSync("git", ["push", "-u", "origin", "main"], { cwd: curaDirectory });
 
   fs.writeFileSync(path.join(curaDirectory, ".gitignore"), gitignoreContent);
 }
@@ -272,7 +259,8 @@ async function confirmAndKillCura(): Promise<boolean> {
 }
 
 async function printDiff() {
-  const diffRes = execSync(`GIT_PAGER=cat git diff --staged --stat`, {
+  const diffRes = execFileSync("git", ["diff", "--staged", "--stat"], {
+    env: { GIT_PAGER: "cat" },
     cwd: curaDirectory,
     stdio: "pipe",
   });
@@ -308,12 +296,34 @@ async function main() {
   }
 
   if (positionals[2] === "init") {
-    if (isGitInitialized) {
-      console.error("looks like the cura folder is already initialized");
+    const res = await confirm(
+      "This command will turn your cura configuration folder into a git repo and push it into a blank repository. Use this if you want to share your config with others. Proceed?",
+      "n"
+    );
+
+    if (res !== "y") {
       process.exit(1);
     }
 
-    await initializeRepo();
+    if (isGitInitialized) {
+      const alreadyInitAsk = await confirm(
+        "Looks like the cura folder is already initialized as a repo. Do you want to go ahead anyway? This will overwrite the repo",
+        "n"
+      );
+
+      if (alreadyInitAsk !== "y") {
+        process.exit(1);
+      }
+    }
+
+    const url = positionals[3];
+
+    if (!isValidUrl(url)) {
+      console.error("Invalid URL. Please enter a valid URL.");
+      process.exit(1);
+    }
+
+    await initializeRepo(url);
 
     process.exit(0);
   }
@@ -340,21 +350,24 @@ async function main() {
       process.exit(1);
     }
 
+    const killRes = await confirmAndKillCura();
+
+    if (!killRes) {
+      throw new Error("Exiting: cura is still running");
+    }
+
     console.log("Backing up your current cura configuration...");
     const curaDirectory = getDefaultCuraDirectory();
     const backupDirectory = path.join(
       curaDirectory,
       "../cura_backup_" + Date.now()
     );
-    execSync(`cp -r ${curaDirectory} ${backupDirectory}`);
+    execFileSync("mv", [curaDirectory, backupDirectory]);
+    execFileSync("mkdir", [curaDirectory]);
     console.log("Cura folder has been backed up successfully.");
 
-    console.log("Clearing out the cura folder...");
-    execSync(`rm -rf ${curaDirectory}/*`);
-    console.log("Cura folder has been cleared.");
-
     console.log(`Cloning from ${url}...`);
-    execSync(`git clone ${url} .`, { cwd: curaDirectory });
+    execFileSync(`git`, ["clone", url, `.`], { cwd: curaDirectory });
     console.log("Clone operation completed successfully. Try opening cura");
 
     process.exit(0);
@@ -362,7 +375,7 @@ async function main() {
 
   if (positionals[2] === "pull") {
     console.log("pulling config from origin...");
-    execSync(`git pull`, { cwd: curaDirectory, stdio: "inherit" });
+    execFileSync("git", ["pull"], { cwd: curaDirectory, stdio: "inherit" });
     console.log("pulled config from origin!");
 
     process.exit(0);
@@ -392,7 +405,7 @@ async function main() {
 
     console.log("pushing config to origin");
 
-    execSync(`git add .`, { cwd: curaDirectory, stdio: "inherit" });
+    execFileSync("git", ["add", "."], { cwd: curaDirectory, stdio: "inherit" });
 
     await printDiff();
 
@@ -400,12 +413,12 @@ async function main() {
       "Enter a message describing what you changed:"
     );
 
-    execSync(`git commit -m "[curasync] ${commitMessage}"`, {
+    execFileSync("git", ["commit", "-m", `[curasync] ${commitMessage}`], {
       cwd: curaDirectory,
       stdio: "inherit",
     });
 
-    execSync(`git push`, { cwd: curaDirectory, stdio: "inherit" });
+    execFileSync("git", ["push"], { cwd: curaDirectory, stdio: "inherit" });
     console.log("pushed config to origin!");
 
     process.exit(0);
