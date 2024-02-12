@@ -4,8 +4,14 @@ import fs from "fs";
 import os from "os";
 import { execSync } from "child_process";
 import { parseArgs } from "util";
-import { $ } from "bun";
+import { $, sleep } from "bun";
 import path from "path";
+import readline from "readline";
+
+const rl = readline.createInterface({
+  input: process.stdin,
+  output: process.stdout,
+});
 
 const gitignoreContent = `.DS_Store
 **/.DS_Store
@@ -112,11 +118,13 @@ function printHelp() {
   console.log(`curasync
 \thelp\tprint help screen
 \tinit\tinitialize curasync in your cura folder
+\tclone\tpull a curasync remote
 \tpull\tgrab changes from remote
-\tpush\tpush local changes to remote`);
+\tpush\tpush local changes to remote
+\tcwd\tprint the cura directory`);
 }
 
-function isValidUrl(url) {
+function isValidUrl(url: string) {
   try {
     new URL(url);
     return true;
@@ -125,7 +133,7 @@ function isValidUrl(url) {
   }
 }
 
-async function ask(
+async function confirm(
   q: string,
   defaultAnswer?: "y" | "n" | undefined
 ): Promise<"y" | "n" | null> {
@@ -133,8 +141,13 @@ async function ask(
     y: "(Y/n)",
     n: "(y/N)",
   };
-  process.stdout.write(`${q} ${qPrompts[defaultAnswer] ?? "(y/n)"} `);
-  for await (const line of console) {
+  while (true) {
+    const line: string = await new Promise((resolve) =>
+      rl.question(
+        `${q} ${defaultAnswer ? qPrompts[defaultAnswer] : "(y/n)"} `,
+        (r) => resolve(r)
+      )
+    );
     const l = line.trim().toLowerCase();
     if (l === "y" || l === "n") {
       return l;
@@ -142,13 +155,31 @@ async function ask(
     if (l === "") {
       return defaultAnswer ?? null;
     }
-    console.log(`${q} ${qPrompts[defaultAnswer] ?? "(y/n)"}`);
   }
   throw new Error("unreachable code");
 }
 
+async function ask(q: string, defaultAnswer?: string): Promise<string> {
+  while (true) {
+    const line: string = await new Promise((resolve) =>
+      rl.question(`${q}${defaultAnswer ? ` (${defaultAnswer})` : ""} `, (r) =>
+        resolve(r)
+      )
+    );
+    if (line === "" && !defaultAnswer) {
+      continue;
+    } else if (line === "" && defaultAnswer) {
+      return defaultAnswer;
+    }
+
+    return line;
+  }
+
+  throw new Error("unreachable");
+}
+
 async function initializeRepo() {
-  const res = await ask(
+  const res = await confirm(
     "This command will turn your cura configuration folder into a git repo and push it into a blank repository. Use this if you want to share your config with others. Proceed?",
     "n"
   );
@@ -157,7 +188,11 @@ async function initializeRepo() {
     process.exit(1);
   }
 
-  await confirmAndKillCura();
+  const killRes = await confirmAndKillCura();
+
+  if (!killRes) {
+    throw new Error("Exiting: cura is still running");
+  }
 
   console.log("Enter a git repo origin");
   let url;
@@ -216,23 +251,42 @@ async function killProcess(pid: number) {
   }
 }
 
-async function confirmAndKillCura() {
+async function confirmAndKillCura(): Promise<boolean> {
   const curaPid = await getCuraPid();
 
   if (curaPid === null) {
-    return;
+    return true;
   }
 
-  const res = await ask(
+  const res = await confirm(
     "Cura is running. To proceed safely, you need to exit out of cura. Kill cura?",
     "y"
   );
 
   if (res !== "y") {
-    process.exit(1);
+    return false;
   }
 
   await killProcess(curaPid);
+  return true;
+}
+
+async function printDiff() {
+  const diffRes = execSync(`GIT_PAGER=cat git diff --staged --stat`, {
+    cwd: curaDirectory,
+    stdio: "pipe",
+  });
+
+  const diffOutput = diffRes.toString().trim();
+
+  console.log(diffOutput);
+}
+
+async function isCuraDirty() {
+  return (
+    (await $`git -C ${curaDirectory} diff-index --exit-code HEAD > /dev/null`)
+      .exitCode === 1
+  );
 }
 
 async function main() {
@@ -268,16 +322,16 @@ async function main() {
     const url = positionals[3];
 
     if (!url) {
-      console.error("No URL provided for clone operation");
+      console.error("No URL provided. Invocation: `curasync clone [repo url]`");
       process.exit(1);
     }
 
     if (!isValidUrl(url)) {
-      console.error("Invalid URL provided for clone operation");
+      console.error(`Invalid URL provided for clone operation: ${url}`);
       process.exit(1);
     }
 
-    const askRes = await ask(
+    const askRes = await confirm(
       "This will clone the configuration from a given, existing repo into your cura directory. (Your current configuration will be backed up). Proceed?",
       "n"
     );
@@ -315,9 +369,50 @@ async function main() {
   }
 
   if (positionals[2] === "push") {
+    const curaPid = await getCuraPid();
+
+    if (curaPid) {
+      const quitCura = await confirm(
+        "Cura is currently running. Cura often saves configuration on exit. Would you like to quit Cura?",
+        "y"
+      );
+
+      if (quitCura === "y") {
+        await killProcess(curaPid);
+        await sleep(1000);
+      }
+    }
+
+    const isDirty = await isCuraDirty();
+
+    if (!isDirty) {
+      console.error("Looks like there are no changes to push");
+      process.exit(1);
+    }
+
     console.log("pushing config to origin");
+
+    execSync(`git add .`, { cwd: curaDirectory, stdio: "inherit" });
+
+    await printDiff();
+
+    const commitMessage = await ask(
+      "Enter a message describing what you changed:"
+    );
+
+    execSync(`git commit -m "[curasync] ${commitMessage}"`, {
+      cwd: curaDirectory,
+      stdio: "inherit",
+    });
+
     execSync(`git push`, { cwd: curaDirectory, stdio: "inherit" });
     console.log("pushed config to origin!");
+
+    process.exit(0);
+  }
+
+  if (positionals[2] === "cwd") {
+    console.log(curaDirectory);
 
     process.exit(0);
   }

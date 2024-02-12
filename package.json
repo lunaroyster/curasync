@@ -1,15 +1,25 @@
 {
   "name": "curasync",
-  "version": "1.0.0",
-  "description": "",
+  "version": "0.0.1-dev",
+  "description": "Sync your cura configuration folder with a git repository",
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "build": "bun build --compile index.ts --outfile build/curasync"
+    "build": "bun build --compile index.ts --outfile build/curasync",
+    "prepublishOnly": "npm run build"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "files": [
+    "build/*"
+  ],
+  "bin": {
+    "curasync": "./build/curasync"
+  },
+  "keywords": [
+    "cura",
+    "3d-printing"
+  ],
+  "author": "lunaroyster",
+  "license": "MIT",
   "devDependencies": {
     "@types/bun": "latest"
   },
